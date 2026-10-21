@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Data analysis scripts"
 requires-python = ">=3.14"
 dependencies = [
+    "braindecode>=1.8.1",
     "matplotlib>=3.11.2",
     "mne>=1.13.2",
     "numpy>=2.5.4",

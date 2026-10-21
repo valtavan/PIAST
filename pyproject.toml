@@ -12,6 +12,7 @@ dependencies = [
     "scipy>=1.18.1",
     "seaborn>=0.13.2",
     "torch>=2.14.1",
+    "yasa>=0.8.0",
 ]
 
 [tool.uv]

@@ -5,11 +5,17 @@ Setup:
 Install uv:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
+Install direnv to auto-update bashrc and change env in different folders:
+curl -sfL https://direnv.net/install.sh | bin_path=$HOME/.local/bin bash
+echo 'eval "$(direnv hook bash)"' >> ~/.bashrc
+source ~/.bashrc
+
 Personal env folder:
 mkdir $HOME/pl1358-01/project_data/envs/$USER
 
 Setup uv storage to project_data:
-echo 'export UV_PROJECT_ENVIRONMENT=$HOME/pl1358-01/project_data/envs/$USER/venv' >> ~/.bashrc
+echo 'export UV_PROJECT_ENVIRONMENT=$HOME/pl1358-01/project_data/envs/$USER/venv' >> ~/.envrc
+direnv allow
 echo 'export UV_CACHE_DIR=$HOME/pl1358-01/project_data/envs/$USER/uv-cache' >> ~/.bashrc
 echo 'export UV_PYTHON_INSTALL_DIR=$HOME/pl1358-01/project_data/envs/$USER/python' >> ~/.bashrc
 source ~/.bashrc

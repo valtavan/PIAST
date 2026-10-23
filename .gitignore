@@ -11,3 +11,4 @@ wheels/
 
 # Logs of jobs run
 *.log
+.envrc

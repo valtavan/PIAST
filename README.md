@@ -5,22 +5,26 @@ Setup:
 Install uv:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-Install direnv to auto-update bashrc and change env in different folders:
+Install direnv to set venv in different folders when you cd into it:
 curl -sfL https://direnv.net/install.sh | bin_path=$HOME/.local/bin bash
-echo 'eval "$(direnv hook bash)"' >> ~/.bashrc
-source ~/.bashrc
+printf '\neval "$(direnv hook bash)"\n' >> ~/.bashrc
 
 Personal env folder:
-mkdir $HOME/pl1358-01/project_data/envs/$USER
+mkdir -p $HOME/pl1358-01/project_data/envs/$USER
 
-Setup uv storage to project_data:
-echo 'export UV_PROJECT_ENVIRONMENT=$HOME/pl1358-01/project_data/envs/$USER/venv' >> ~/.envrc
-direnv allow
-echo 'export UV_CACHE_DIR=$HOME/pl1358-01/project_data/envs/$USER/uv-cache' >> ~/.bashrc
-echo 'export UV_PYTHON_INSTALL_DIR=$HOME/pl1358-01/project_data/envs/$USER/python' >> ~/.bashrc
+Setup uv storage to project_data as one command:
+cat >> ~/.bashrc <<'EOF'
+
+export UV_CACHE_DIR=$HOME/pl1358-01/project_data/envs/$USER/uv-cache
+export UV_PYTHON_INSTALL_DIR=$HOME/pl1358-01/project_data/envs/$USER/python
+EOF
 source ~/.bashrc
 
 Then:
+cd into code/
+and run to enable the per folder .envrc:
+direnv allow
+
 uv sync --locked
 to update the environment to the same state
 run 'uv add numpy' to add new packages (then commit)

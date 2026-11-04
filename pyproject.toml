@@ -6,9 +6,11 @@ requires-python = ">=3.14"
 dependencies = [
     "braindecode>=1.8.1",
     "matplotlib>=3.11.2",
+    "mfdfa>=0.4.3",
     "mne>=1.13.2",
     "numpy>=2.5.4",
     "pandas>=3.0.6",
+    "pyarrow>=26.0.0",
     "scikit-learn>=1.9.1",
     "scipy>=1.18.1",
     "seaborn>=0.13.2",

@@ -1,7 +1,11 @@
 The files pyproject.toml and uv.lock in this folder describe which Python version and packages are used. They are shared by everyone.
 Each person builds their own copy of the environment from those files. The environments are stored separately (in envs/<username>/), so nobody overwrites anyone else's.
 
-Setup:
+Setup:  
+Install uv:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 Install uv:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 

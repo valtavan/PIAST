@@ -4,17 +4,24 @@ delta_models.py - what explains the late - early change in h(q)?
   (1) does the amount of slow-wave sleep (N3, stage_code 3) earlier in the night predict the change?
   (2) does the change survive adjustment for the change in spectral properties?
 
-Usage:
-    python delta_models.py --medians CSV --subjects CSV [--spectral-dir DIR] [--hyp-dir DIR]
-                           [--measures h_q+2 ...] [--out-dir DIR]
+Usage (folders come from paths.py, so no arguments are needed):
+    python delta_models.py                         # h_q+2 from through_night.py output
+    python delta_models.py --source scale_refit    # h2_short, h2_long, h2_full from scale_refit.py output
+    python delta_models.py --no-spectral           # skip the spectral models
+Full form:
+    python delta_models.py [--source through_night|scale_refit] [--medians CSV] [--subjects CSV]
+                           [--spectral-dir DIR | --no-spectral] [--hyp-dir DIR] [--measures M ...] [--out-dir DIR]
 
-Inputs
-  --medians   per subject/stage/window medians: through_night_subject_medians.csv (measures such as
-              h_q+2) or scale_refit_subject_medians.csv (h2_short, h2_long, ...); pick with --measures
-  --subjects  the matching *_subjects.csv; supplies n_sws_before_late (SWS epochs between sleep onset
-              and the start of the late window), n_sws_total and sleep_period_h per subject
-  --spectral-dir  optional, sof_spectral.py output; the late - early change of each spectral feature
-              is then used as covariates. Windows and stages are assigned exactly as in through_night.py.
+Inputs (defaults in brackets)
+  --source    which earlier analysis to read: its subject medians and subjects table are taken from
+              RESULTS_DIR/{source}/{source}_subject_medians.csv and {source}_subjects.csv [through_night]
+  --medians / --subjects   explicit paths overriding --source (the subjects table supplies
+              n_sws_before_late = SWS epochs between sleep onset and the start of the late window,
+              n_sws_total and sleep_period_h; rerun through_night.py v2 if these columns are missing)
+  --measures  columns of the medians file [h_q+2 for through_night; h2_short h2_long h2_full for scale_refit]
+  spectral    used automatically when SPECTRAL_DIR (paths.py) holds sof_spectral.py output; the late - early
+              change of each spectral feature is then used as covariates. Windows and stages are assigned
+              exactly as in through_night.py. --spectral-dir overrides the folder, --no-spectral skips it.
 
 Unit of analysis: one row per subject and stage, y = (median late) - (median early) of the measure,
 requiring >= MIN_EPOCHS epochs of that stage in both windows (same rule as through_night.py).
@@ -45,6 +52,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
+import paths
 import through_night as tn
 
 SPECTRAL = ["slope_1_40", "slope_20_45", "rel_delta", "rel_sigma", "log10_power"]
@@ -97,13 +105,30 @@ def fmt(coef, lo, hi):
 
 def main():
     parser = argparse.ArgumentParser(description="SWS dose-response and spectral adjustment of the late - early change.")
-    parser.add_argument("--medians", required=True, type=lambda s: Path(s).expanduser())
-    parser.add_argument("--subjects", required=True, type=lambda s: Path(s).expanduser())
-    parser.add_argument("--spectral-dir", type=lambda s: Path(s).expanduser())
+    parser.add_argument("--source", choices=["through_night", "scale_refit"], default="through_night")
+    parser.add_argument("--medians", type=lambda s: Path(s).expanduser())
+    parser.add_argument("--subjects", type=lambda s: Path(s).expanduser())
+    parser.add_argument("--spectral-dir", type=lambda s: Path(s).expanduser(), default=paths.SPECTRAL_DIR)
+    parser.add_argument("--no-spectral", action="store_true", help="skip the spectral models")
     parser.add_argument("--hyp-dir", type=lambda s: Path(s).expanduser(), default=tn.HYP_DIR)
-    parser.add_argument("--measures", nargs="+", default=["h_q+2"])
+    parser.add_argument("--measures", nargs="+")
     parser.add_argument("--out-dir", type=lambda s: Path(s).expanduser())
     args = parser.parse_args()
+
+    source_dir = paths.RESULTS_DIR / args.source
+    args.medians = args.medians or source_dir / f"{args.source}_subject_medians.csv"
+    args.subjects = args.subjects or source_dir / f"{args.source}_subjects.csv"
+    for f in (args.medians, args.subjects):
+        if not f.exists():
+            sys.exit(f"{f} not found. Run {args.source}.py first (or pass --medians/--subjects, or edit paths.py).")
+    args.measures = args.measures or (["h2_short", "h2_long", "h2_full"] if args.source == "scale_refit" else ["h_q+2"])
+    if args.no_spectral:
+        args.spectral_dir = None
+    elif not (args.spectral_dir and args.spectral_dir.is_dir() and any(args.spectral_dir.glob("[0-9]*.parquet"))):
+        print(f"[no spectral features found in {args.spectral_dir}; running without the spectral models]")
+        args.spectral_dir = None
+    else:
+        print(f"[using spectral features from {args.spectral_dir}]")
     out_dir = args.out_dir or args.medians.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 

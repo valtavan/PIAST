@@ -3,7 +3,9 @@
 scale_refit.py - is the early-vs-late change in h(q) in the short or in the long scales?
 
 Usage:
-    python scale_refit.py RESULTS_DIR [--hyp-dir DIR] [--out-dir DIR]
+    python scale_refit.py [RESULTS_DIR] [--hyp-dir DIR] [--out-dir DIR]
+
+With no arguments it uses the folders in paths.py (RESULTS_DIR = the full MFDFA run).
 
 Uses the stored log F_q(s) curves ({id}_curves.npz from sof_mfdfa.py), so nothing is recomputed
 from the EEG. For q = +2 and q = -2 the exponent is refitted over three scale ranges (seconds;
@@ -32,6 +34,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import paths
 import through_night as tn
 
 SCALE_RANGES = {"short": (0.0, 1.0), "long": (1.0, np.inf), "full": (0.0, np.inf)}  # seconds, low < s <= high
@@ -99,12 +102,13 @@ def show(summary, measures, title):
 
 def main():
     parser = argparse.ArgumentParser(description="Refit h(q) over short and long scales from stored curves.")
-    parser.add_argument("results_dir", type=lambda s: Path(s).expanduser())
+    parser.add_argument("results_dir", nargs="?", default=paths.RESULTS_DIR, type=lambda s: Path(s).expanduser(),
+                        help=f"sof_mfdfa.py output folder (default: {paths.RESULTS_DIR})")
     parser.add_argument("--hyp-dir", type=lambda s: Path(s).expanduser(), default=tn.HYP_DIR)
     parser.add_argument("--out-dir", type=lambda s: Path(s).expanduser(), help="default: RESULTS_DIR/scale_refit")
     args = parser.parse_args()
     if not args.results_dir.is_dir():
-        sys.exit(f"Results directory not found: {args.results_dir}")
+        sys.exit(f"Results directory not found: {args.results_dir}. Pass the folder or edit paths.py.")
     curve_files = sorted(args.results_dir.glob("[0-9]*_curves.npz"))
     if not curve_files:
         sys.exit(f"No {{subject_id}}_curves.npz files in {args.results_dir}")

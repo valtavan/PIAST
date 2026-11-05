@@ -4,7 +4,9 @@ through_night.py - early vs late sleep: does MFDFA h(q) change between the first
 1.5 h of the sleep period, within each stage?
 
 Usage:
-    python through_night.py RESULTS_DIR [--hyp-dir DIR] [--out-dir DIR] [--min-r2 R]
+    python through_night.py [RESULTS_DIR] [--hyp-dir DIR] [--out-dir DIR] [--min-r2 R]
+
+With no arguments it uses the folders in paths.py (RESULTS_DIR = the full MFDFA run).
 
 RESULTS_DIR is a sof_mfdfa.py output folder ({id}.parquet files). Hypnograms are read from
 {hyp-dir}/hypnogram_{id}.csv (epoch, stage_code, start_sec) and joined by TIME
@@ -41,6 +43,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon
 
+import paths
+
 EPOCH_S = 30
 WINDOW_H = 1.5
 ONSET_RUN_EPOCHS = 10  # 5 min of CONSECUTIVE sleep epochs defines onset / final awakening
@@ -48,7 +52,7 @@ MIN_EPOCHS = 10  # per subject, stage and window: a plain count of epochs, not c
 N_BOOT = 5000
 STAGES = {0: "wake", 1: "N1", 2: "N2", 3: "SWS", 4: "REM"}
 MEASURES = ["h_q+2", "h_q-2", "delta_h", "epoch_std_uv"]  # first one is primary
-HYP_DIR = Path("~/pl1358-01/project_data/worksof/hypnograms/expert").expanduser()
+HYP_DIR = paths.HYP_DIR
 
 
 def sleep_period(t, stage, k):
@@ -172,7 +176,8 @@ def stage_comparison(medians, measures, rng):
 
 def main():
     parser = argparse.ArgumentParser(description="Early vs late sleep comparison of MFDFA measures.")
-    parser.add_argument("results_dir", type=lambda s: Path(s).expanduser())
+    parser.add_argument("results_dir", nargs="?", default=paths.RESULTS_DIR, type=lambda s: Path(s).expanduser(),
+                        help=f"sof_mfdfa.py output folder (default: {paths.RESULTS_DIR})")
     parser.add_argument("--hyp-dir", type=lambda s: Path(s).expanduser(), default=HYP_DIR)
     parser.add_argument("--out-dir", type=lambda s: Path(s).expanduser(),
                         help="default: RESULTS_DIR/through_night")
@@ -180,7 +185,7 @@ def main():
                         help="sensitivity check: drop epoch-channel rows whose r2_q+2 is below this (default: off)")
     args = parser.parse_args()
     if not args.results_dir.is_dir():
-        sys.exit(f"Results directory not found: {args.results_dir}")
+        sys.exit(f"Results directory not found: {args.results_dir}. Pass the folder or edit paths.py.")
     parquets = sorted(args.results_dir.glob("[0-9]*.parquet"))
     if not parquets:
         sys.exit(f"No {{subject_id}}.parquet files in {args.results_dir}. "

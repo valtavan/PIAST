@@ -29,6 +29,9 @@ and run to enable the per folder `.envrc`:
 ```bash
 direnv allow
 ```
-`uv sync --locked`  
+
 to update the environment to the same state
-run `uv add numpy` to add new packages (then commit)
+```bash
+uv sync --locked
+```
+later run `uv add numpy` to add new packages (then commit)

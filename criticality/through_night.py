@@ -19,18 +19,22 @@ Definitions (constants below):
   Wake inside the windows (after onset / before final awakening) is analyzed as stage 0.
 
 Method: the four derivations are averaged per epoch (status ok only). Per subject, stage and
-window, take the median of each measure, requiring >= MIN_EPOCHS epochs. For each stage, the
-paired difference late - early across subjects is summarized with the mean difference, a
-bootstrap 95% CI over subjects, a Wilcoxon signed-rank p value, and a Holm-adjusted p across
-the stages (per measure). h_q+2 is the primary measure; the others are secondary.
+window, take the median of each measure, requiring >= MIN_EPOCHS epochs (a plain count, not
+consecutive). For each stage, the paired difference late - early across subjects is summarized
+with the mean difference, a bootstrap 95% CI over subjects, a Wilcoxon signed-rank p value, and
+a Holm-adjusted p across the stages (per measure). h_q+2 is the primary measure.
 
-Not handled here: the spectral slope / slow-wave power confound, and continuous time-of-night
-modelling. A difference found here is a difference in scaling, not by itself evidence of criticality.
+The subjects table also records slow-wave sleep (stage 3) epoch counts per subject
+(n_sws_total, n_sws_before_late, n_sleep_epochs) for the dose-response analysis in delta_models.py.
 
-Writes to OUT_DIR: through_night_subjects.csv (inclusion and window info),
-through_night_subject_medians.csv, through_night_summary.csv.
+The functions assign_windows, stage_medians and stage_comparison are reused by scale_refit.py
+and delta_models.py.
+
+Writes to OUT_DIR: through_night_subjects.csv, through_night_subject_medians.csv,
+through_night_summary.csv.
 """
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -39,8 +43,8 @@ from scipy.stats import wilcoxon
 
 EPOCH_S = 30
 WINDOW_H = 1.5
-ONSET_RUN_EPOCHS = 10  # 5 min of continuous sleep defines onset / final awakening
-MIN_EPOCHS = 10  # per subject, stage and window
+ONSET_RUN_EPOCHS = 10  # 5 min of CONSECUTIVE sleep epochs defines onset / final awakening
+MIN_EPOCHS = 10  # per subject, stage and window: a plain count of epochs, not consecutive
 N_BOOT = 5000
 STAGES = {0: "wake", 1: "N1", 2: "N2", 3: "SWS", 4: "REM"}
 MEASURES = ["h_q+2", "h_q-2", "delta_h", "epoch_std_uv"]  # first one is primary
@@ -72,22 +76,16 @@ def holm(p):
     return adj
 
 
-def load_subject(parquet, hyp_dir, min_r2):
-    """Per-epoch table (channels averaged, stage joined) and a dict about the subject, or (None, info)."""
-    sid = parquet.stem
-    info = {"subject_id": sid}
-    hyp_file = hyp_dir / f"hypnogram_{sid}.csv"
+def assign_windows(epochs, hyp_file, info):
+    """Join stages to a per-epoch table and label the early / late windows.
+
+    epochs: DataFrame with an integer column t (epoch start, seconds) and measure columns.
+    info:   dict with at least subject_id; filled with sleep period, window counts and SWS counts.
+    Returns (table of epochs inside a window with columns stage_code, window, subject_id; or None, info).
+    """
     if not hyp_file.exists():
         info["excluded"] = "no hypnogram file"
         return None, info
-    cols = ["window_start_time_s", "channel", "status", "r2_q+2"] + MEASURES
-    df = pd.read_parquet(parquet, columns=list(dict.fromkeys(cols)))
-    df = df[df["status"] == "ok"]
-    if min_r2 > 0:
-        df = df[df["r2_q+2"] >= min_r2]
-    epochs = df.groupby("window_start_time_s", as_index=False)[MEASURES].mean()
-    epochs["t"] = epochs["window_start_time_s"].round().astype(int)
-
     hyp = pd.read_csv(hyp_file)
     hyp["t"] = hyp["start_sec"].round().astype(int)
     period = sleep_period(hyp["t"].to_numpy(), hyp["stage_code"].to_numpy(), ONSET_RUN_EPOCHS)
@@ -95,22 +93,48 @@ def load_subject(parquet, hyp_dir, min_r2):
         info["excluded"] = f"no run of {ONSET_RUN_EPOCHS} sleep epochs"
         return None, info
     onset, offset = period
-    info.update(onset_h=onset / 3600, offset_h=offset / 3600, sleep_period_h=(offset - onset) / 3600)
-    if offset - onset < 2 * WINDOW_H * 3600:
+    w = WINDOW_H * 3600
+    in_period = (hyp["t"] >= onset) & (hyp["t"] < offset)
+    info.update(onset_h=onset / 3600, offset_h=offset / 3600, sleep_period_h=(offset - onset) / 3600,
+                n_sleep_epochs=int((in_period & hyp["stage_code"].between(1, 4)).sum()),
+                n_sws_total=int((in_period & (hyp["stage_code"] == 3)).sum()),
+                n_sws_before_late=int(((hyp["t"] >= onset) & (hyp["t"] < offset - w)
+                                       & (hyp["stage_code"] == 3)).sum()))
+    if offset - onset < 2 * w:
         info["excluded"] = f"sleep period under {2 * WINDOW_H:g} h"
         return None, info
 
-    w = WINDOW_H * 3600
     merged = epochs.merge(hyp[["t", "stage_code"]], on="t", how="inner")
     merged["window"] = np.select(
         [(merged["t"] >= onset) & (merged["t"] < onset + w), (merged["t"] >= offset - w) & (merged["t"] < offset)],
         ["early", "late"], default="")
     merged = merged[merged["window"] != ""].copy()
     merged["stage_code"] = merged["stage_code"].astype(int)
-    merged["subject_id"] = sid
+    merged["subject_id"] = info["subject_id"]
     info["n_epochs_early"] = int((merged["window"] == "early").sum())
     info["n_epochs_late"] = int((merged["window"] == "late").sum())
     return merged, info
+
+
+def load_subject(parquet, hyp_dir, min_r2):
+    """MFDFA parquet -> per-epoch table (channels averaged, status ok) -> assign_windows."""
+    sid = parquet.stem
+    cols = ["window_start_time_s", "channel", "status", "r2_q+2"] + MEASURES
+    df = pd.read_parquet(parquet, columns=list(dict.fromkeys(cols)))
+    df = df[df["status"] == "ok"]
+    if min_r2 > 0:
+        df = df[df["r2_q+2"] >= min_r2]
+    epochs = df.groupby("window_start_time_s", as_index=False)[MEASURES].mean()
+    epochs["t"] = epochs["window_start_time_s"].round().astype(int)
+    return assign_windows(epochs, hyp_dir / f"hypnogram_{sid}.csv", {"subject_id": sid})
+
+
+def stage_medians(windowed, measures):
+    """Median of each measure per subject, stage and window, with the epoch count."""
+    medians = (windowed.groupby(["subject_id", "stage_code", "window"])
+               .agg(n_epochs=("t", "size"), **{m: (m, "median") for m in measures}).reset_index())
+    medians["stage"] = medians["stage_code"].map(STAGES)
+    return medians
 
 
 def paired_stats(early, late, rng):
@@ -125,6 +149,27 @@ def paired_stats(early, late, rng):
             "p_wilcoxon": p}
 
 
+def stage_comparison(medians, measures, rng):
+    """Paired late - early statistics per stage and measure, with Holm over stages per measure."""
+    rows = []
+    for code, name in STAGES.items():
+        sub = medians[(medians["stage_code"] == code) & (medians["n_epochs"] >= MIN_EPOCHS)]
+        wide = (sub.pivot(index="subject_id", columns="window", values=measures)
+                .reindex(columns=pd.MultiIndex.from_product([measures, ["early", "late"]])).dropna())
+        for m in measures:
+            if len(wide) < 3:
+                rows.append({"stage": name, "measure": m, "n_subjects": len(wide)})
+                continue
+            rows.append({"stage": name, "measure": m, **paired_stats(wide[(m, "early")].to_numpy(),
+                                                                     wide[(m, "late")].to_numpy(), rng)})
+    summary = pd.DataFrame(rows)
+    summary["p_holm_over_stages"] = np.nan
+    for m in measures:
+        sel = summary["measure"] == m
+        summary.loc[sel, "p_holm_over_stages"] = holm(summary.loc[sel, "p_wilcoxon"].to_numpy())
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser(description="Early vs late sleep comparison of MFDFA measures.")
     parser.add_argument("results_dir", type=lambda s: Path(s).expanduser())
@@ -134,23 +179,31 @@ def main():
     parser.add_argument("--min-r2", type=float, default=0.0,
                         help="sensitivity check: drop epoch-channel rows whose r2_q+2 is below this (default: off)")
     args = parser.parse_args()
+    if not args.results_dir.is_dir():
+        sys.exit(f"Results directory not found: {args.results_dir}")
+    parquets = sorted(args.results_dir.glob("[0-9]*.parquet"))
+    if not parquets:
+        sys.exit(f"No {{subject_id}}.parquet files in {args.results_dir}. "
+                 "Point RESULTS_DIR at the sof_mfdfa.py output folder (e.g. .../criticality/order2_smin0.125).")
     out_dir = args.out_dir or args.results_dir / "through_night"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     tables, infos = [], []
-    for parquet in sorted(args.results_dir.glob("[0-9]*.parquet")):
+    for parquet in parquets:
         table, info = load_subject(parquet, args.hyp_dir, args.min_r2)
         infos.append(info)
         if table is not None:
             tables.append(table)
     subjects = pd.DataFrame(infos).set_index("subject_id")
+    if "excluded" not in subjects.columns:  # nobody excluded
+        subjects["excluded"] = np.nan
     subjects.to_csv(out_dir / "through_night_subjects.csv")
     if not tables:
         print("No subject could be analyzed. Reasons:\n", subjects["excluded"].value_counts().to_string())
         return
     epochs = pd.concat(tables, ignore_index=True)
 
-    used = subjects[subjects.get("excluded").isna()]
+    used = subjects[subjects["excluded"].isna()]
     print(f"{len(used)} of {len(subjects)} subjects analyzed"
           + (f"; excluded: {subjects['excluded'].value_counts().to_dict()}" if len(used) < len(subjects) else ""))
     print(f"sleep period (h), median [min-max]: {used['sleep_period_h'].median():.1f} "
@@ -163,28 +216,9 @@ def main():
     print("\nstage composition of each window (mean share across subjects; shows why stages are compared separately):")
     print(comp.round(3).to_string())
 
-    medians = (epochs.groupby(["subject_id", "stage_code", "window"])
-               .agg(n_epochs=("t", "size"), **{m: (m, "median") for m in MEASURES}).reset_index())
-    medians["stage"] = medians["stage_code"].map(STAGES)
+    medians = stage_medians(epochs, MEASURES)
     medians.to_csv(out_dir / "through_night_subject_medians.csv", index=False)
-
-    rng = np.random.default_rng(0)
-    rows = []
-    for code, name in STAGES.items():
-        sub = medians[(medians["stage_code"] == code) & (medians["n_epochs"] >= MIN_EPOCHS)]
-        wide = (sub.pivot(index="subject_id", columns="window", values=MEASURES)
-                .reindex(columns=pd.MultiIndex.from_product([MEASURES, ["early", "late"]])).dropna())
-        for m in MEASURES:
-            if len(wide) < 3:
-                rows.append({"stage": name, "measure": m, "n_subjects": len(wide)})
-                continue
-            rows.append({"stage": name, "measure": m, **paired_stats(wide[(m, "early")].to_numpy(),
-                                                                     wide[(m, "late")].to_numpy(), rng)})
-    summary = pd.DataFrame(rows)
-    summary["p_holm_over_stages"] = np.nan
-    for m in MEASURES:
-        sel = summary["measure"] == m
-        summary.loc[sel, "p_holm_over_stages"] = holm(summary.loc[sel, "p_wilcoxon"].to_numpy())
+    summary = stage_comparison(medians, MEASURES, np.random.default_rng(0))
     summary.to_csv(out_dir / "through_night_summary.csv", index=False)
 
     pd.set_option("display.width", 200)

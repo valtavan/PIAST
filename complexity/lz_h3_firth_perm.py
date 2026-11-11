@@ -4,8 +4,9 @@
 Keep this file in the same folder as lz_h3.py (it imports its loaders).
 
 Groups (baseline MMSE >= --baseline-min only)
-    Stable    V9TENG >= --teng-cut   (default 78)
-    Decline   V9TENG <  --teng-cut
+    Stable    V9TENG >  cut
+    Decline   V9TENG <= cut          (cut = 80 standard, 88 for comparison: --teng-cut 80 88;
+                                      the SOF Visit 9 manual gives "80 or less" as the screening cut point)
     No V9     no Visit 9 score (death / drop-out / not tested; the data cannot say which)
 
 Methods for Stable vs Decline, per stage x channel x covariate set (M1/M2/M3 as in lz_h3.py)
@@ -17,11 +18,11 @@ Methods for Stable vs Decline, per stage x channel x covariate set (M1/M2/M3 as 
     IPW         ML logistic with inverse-probability-of-follow-up weights (sensitivity for No V9).
     Attrition   does delta predict having a Visit 9 score at all?
 
-Outputs in <night-dir>/h3_v2/: tables (csv) and figures (png).
+Outputs in <night-dir>/h3_v2/cut80/ and cut88/: tables (csv) and figures (png).
 
 Usage
-  uv run --frozen python lz_h3_firth_perm.py --teng-cut 78
-  uv run --frozen python lz_h3_firth_perm.py --teng-cut 78 --n-perm 20000 --focus REM_C3_A2
+  uv run --frozen python lz_h3_firth_perm.py --teng-cut 80 88
+  uv run --frozen python lz_h3_firth_perm.py --teng-cut 80 88 --n-perm 20000 --focus REM_C3_A2
 """
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ from scipy import optimize, stats
 from scipy.special import expit
 from statsmodels.stats.multitest import multipletests
 
-from lz_h3 import AHI_COLS, DEFAULT_NIGHT, load_wide, zs
+from lz_h3 import AHI_COLS, DEFAULT_CUTS, DEFAULT_NIGHT, cut_dir, decline_flag, load_wide, zs
 
 STAGES = ["W", "N1", "N2", "SWS", "REM"]
 CHANNELS = ["C3_A2", "C4_A1"]
@@ -160,8 +161,8 @@ def build(args):
     n_base = len(df)
 
     df["has_v9"] = df["V9TENG"].notna().astype(int)
-    df["case"] = np.where(df["V9TENG"].notna(), (df["V9TENG"] < args.teng_cut).astype(float), np.nan)
-    df["group"] = np.select([df["V9TENG"].isna(), df["V9TENG"] < args.teng_cut], ["No V9", "Decline"], "Stable")
+    df["case"] = np.where(df["V9TENG"].notna(), decline_flag(df["V9TENG"], args.teng_cut).astype(float), np.nan)
+    df["group"] = np.select([df["V9TENG"].isna(), decline_flag(df["V9TENG"], args.teng_cut)], ["No V9", "Decline"], "Stable")
 
     df["c_age"] = zs(df["V8AGE"])
     df["c_mmse"] = zs(df["PREMMSE"])
@@ -274,7 +275,7 @@ def plot_forest(res, set_name, cut, path):
     ax.set_yticklabels(STAGES)
     ax.invert_yaxis()
     ax.set_xlabel("Odds ratio for decline per 1 SD of early-to-late LZC change (log scale)")
-    ax.set_title(f"Decline (V9TENG < {cut:g}) vs stable; Firth OR, profile-likelihood 95% CI; model {set_name}", fontsize=9)
+    ax.set_title(f"Decline (V9TENG <= {cut:g}) vs stable; Firth OR, profile-likelihood 95% CI; model {set_name}", fontsize=9)
     ax.legend(title="channel", fontsize=8, loc="upper left", bbox_to_anchor=(1.12, 1.0), frameon=False)
     fig.tight_layout()
     fig.savefig(path, dpi=160)
@@ -282,7 +283,7 @@ def plot_forest(res, set_name, cut, path):
 
 
 def plot_groups(df, cut, path):
-    labels = {"Stable": f"Stable\n(≥{cut:g})", "Decline": f"Decline\n(<{cut:g})", "No V9": "No V9\nscore"}
+    labels = {"Stable": f"Stable\n(>{cut:g})", "Decline": f"Decline\n(≤{cut:g})", "No V9": "No V9\nscore"}
     fig, axes = plt.subplots(len(CHANNELS), len(STAGES), figsize=(15, 6.2))
     rng = np.random.default_rng(0)
     for i, ch in enumerate(CHANNELS):
@@ -329,8 +330,8 @@ def plot_flow(f, cut, path):
     box(2.2, 4.4, f"Visit 9 score available\nn = {f['n_v9']}")
     box(7.8, 4.4, f"No Visit 9 score\nn = {f['n_no_v9']}", COL["No V9"])
     arrow(4.3, 6.5, 2.6, 5.0); arrow(5.7, 6.5, 7.5, 5.0)
-    box(0.9, 1.5, f"Stable\n(≥{cut:g})\nn = {f['n_stable']}", COL["Stable"])
-    box(3.6, 1.5, f"Decline\n(<{cut:g})\nn = {f['n_decline']}", COL["Decline"])
+    box(0.9, 1.5, f"Stable\n(>{cut:g})\nn = {f['n_stable']}", COL["Stable"])
+    box(3.6, 1.5, f"Decline\n(≤{cut:g})\nn = {f['n_decline']}", COL["Decline"])
     arrow(2.0, 3.8, 1.1, 2.3); arrow(2.5, 3.8, 3.3, 2.3)
     fig.tight_layout()
     fig.savefig(path, dpi=160)
@@ -347,7 +348,7 @@ def plot_prob(d, full, pred, cut, path):
     x = mu + sd * zgrid
     ax.plot(x, expit(eta), color="#E45756")
     ax.fill_between(x, expit(eta - 1.96 * se), expit(eta + 1.96 * se), color="#E45756", alpha=0.2)
-    ax.set_ylabel(f"P(decline: V9TENG < {cut:g})")
+    ax.set_ylabel(f"P(decline: V9TENG <= {cut:g})")
     ax.set_title(f"{pred[2:].replace('_', '-')}: Firth-predicted risk (covariates at mean)", fontsize=10)
     for val, colr, yy in [(0, COL["Stable"], 0.3), (1, COL["Decline"], 0.7)]:
         rug.scatter(d.loc[d["case"] == val, pred], np.full((d["case"] == val).sum(), yy), s=8, color=colr, alpha=0.6)
@@ -373,30 +374,13 @@ def plot_null(null, obs, p, pred, path):
 
 
 # ============================================================================== main
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--night-dir", type=Path, default=DEFAULT_NIGHT)
-    ap.add_argument("--subject-file", default="night_change_subject.csv")
-    ap.add_argument("--ahi", choices=list(AHI_COLS), default="hp3r")
-    ap.add_argument("--baseline-min", type=float, default=24)
-    ap.add_argument("--teng-cut", type=float, default=78.0)
-    ap.add_argument("--adjust-early", action="store_true")
-    ap.add_argument("--n-perm", type=int, default=10000)
-    ap.add_argument("--min-n", type=int, default=60)
-    ap.add_argument("--min-events", type=int, default=8)
-    ap.add_argument("--primary-set", default="M2")
-    ap.add_argument("--focus", default="auto", help="predictor for plots 4/5, e.g. REM_C3_A2 (auto = smallest Firth p)")
-    ap.add_argument("--seed", type=int, default=1)
-    args = ap.parse_args()
-    out = args.night_dir / "h3_v2"
+def run(args, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(args.seed)
-    pd.set_option("display.width", 220, "display.max_columns", 40, "display.float_format", "{:.4g}".format)
-
     df, preds, sets, flow = build(args)
     fu = df[df["has_v9"] == 1]
     print("flow:", flow)
-    print(f"Decline = V9TENG < {args.teng_cut:g}: {flow['n_decline']} / {len(fu)} followed "
+    print(f"Decline = V9TENG <= {args.teng_cut:g}: {flow['n_decline']} / {len(fu)} followed "
           f"({100 * flow['n_decline'] / max(len(fu), 1):.1f}%)")
     w = df.loc[df["has_v9"] == 1, "w"].dropna()
     print(f"IPW weights among followed: min {w.min():.2f}, max {w.max():.2f}, "
@@ -445,7 +429,7 @@ def main() -> None:
     res = holm(pd.DataFrame(rows), ["p_firth_lr", "p_perm"])
     res["low_epv"] = res["epv"] < 10
     res.to_csv(out / "h3v2_binary.csv", index=False)
-    print(f"\n== STABLE vs DECLINE (<{args.teng_cut:g}) per 1 SD of delta ==")
+    print(f"\n== STABLE vs DECLINE (<={args.teng_cut:g}) per 1 SD of delta ==")
     print(res[["model_set", "predictor", "n", "events", "epv", "or_firth", "or_lo", "or_hi", "p_firth_lr",
                "p_firth_lr_holm", "p_perm", "p_perm_holm", "or_ml", "or_ipw", "p_ipw"]].to_string(index=False))
 
@@ -463,6 +447,32 @@ def main() -> None:
     plot_null(null, obs, p, pred, out / f"fig5_permutation_null_{focus}.png")
     print(f"\nfocus predictor for fig4/fig5: {focus} (set {args.primary_set})")
     print(f"written to {out}")
+
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--night-dir", type=Path, default=DEFAULT_NIGHT)
+    ap.add_argument("--subject-file", default="night_change_subject.csv")
+    ap.add_argument("--ahi", choices=list(AHI_COLS), default="hp3r")
+    ap.add_argument("--baseline-min", type=float, default=24)
+    ap.add_argument("--teng-cut", type=float, nargs="+", default=list(DEFAULT_CUTS),
+                    help="decline = V9TENG <= cut; first value = standard (80), others = comparison (88)")
+    ap.add_argument("--adjust-early", action="store_true")
+    ap.add_argument("--n-perm", type=int, default=10000)
+    ap.add_argument("--min-n", type=int, default=60)
+    ap.add_argument("--min-events", type=int, default=8)
+    ap.add_argument("--primary-set", default="M2")
+    ap.add_argument("--focus", default="auto", help="predictor for plots 4/5, e.g. REM_C3_A2 (auto = smallest Firth p)")
+    ap.add_argument("--seed", type=int, default=1)
+    args = ap.parse_args()
+    pd.set_option("display.width", 220, "display.max_columns", 40, "display.float_format", "{:.4g}".format)
+
+    for i, cut in enumerate(args.teng_cut):
+        a = argparse.Namespace(**vars(args))
+        a.teng_cut = cut
+        print(f"\n{'#' * 70}\n# cutoff {cut:g} ({'standard' if i == 0 else 'comparison'})\n{'#' * 70}")
+        run(a, cut_dir(args.night_dir / "h3_v2", cut))
 
 
 if __name__ == "__main__":

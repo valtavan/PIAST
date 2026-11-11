@@ -25,9 +25,10 @@ export OMP_NUM_THREADS=1             # keep BLAS from oversubscribing the alloca
 uv run --frozen python lz_positive_control.py \
     --results-dir "${RESULTS}" \
     --night-dir "${NIGHT}" \
-    --teng-cut 78 \
+    --teng-cut 80 88 \
     --sws-var sws_min \
     --awak-var awak_per_h \
     --ahi hp3r
 
-# Outputs: ${NIGHT}/positive_control/
+# --teng-cut 80 88: decline = V9TENG <= cut; 80 is the standard (SOF manual screening cut point), 88 the comparison.
+# Outputs: ${NIGHT}/positive_control/cut80/ and cut88/

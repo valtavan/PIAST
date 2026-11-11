@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=sof_lz
-#SBATCH --array=0-9                 # 30 tasks x ~15 recordings; must equal N_TASKS below
+#SBATCH --array=0-9                 # 10 tasks x ~45 recordings; the task count must equal N_TASKS below
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G                     # one 8 h recording x 4 channels is ~1 GB in float64
 #SBATCH --time=01:00:00
@@ -11,7 +11,7 @@
 
 # Submit from the project directory (the one containing pyproject.toml, uv.lock, lz_sof.py):
 #   mkdir -p logs
-#   JOB=$(sbatch --parsable run_lz.sbatch)
+#   JOB=$(sbatch --parsable run_lz.sh)
 #   sbatch --dependency=afterok:${JOB} --job-name=sof_lz_merge --wrap \
 #       "cd $PWD && uv run --frozen python lz_sof.py merge"
 # Re-submitting is safe: finished subjects are skipped (use --overwrite to redo).
@@ -19,7 +19,7 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR}"
 
-N_TASKS=10
+N_TASKS=10                           # keep equal to the number of array tasks above
 export NUMBA_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 export OMP_NUM_THREADS=1             # keep scipy/BLAS from oversubscribing
 

@@ -44,12 +44,23 @@ DEFAULT_RES = Path.home() / "pl1358-01" / "project_data" / "worksof" / "lz_resul
 
 # ------------------------------------------------------------------ sleep period
 def sleep_periods(d: pd.DataFrame, onset_run: int) -> pd.DataFrame:
-    """Per-subject sleep onset/offset and SWS volume, from the hypnogram epochs in the file."""
+    """Per-subject sleep onset/offset and SWS volume, from the hypnogram epochs in the file.
+
+    The runs are counted on a regular 30 s TIME GRID, not over table rows. Unscored epochs are absent
+    from the hypnogram files (extract_hypnograms.py drops them), so a row-based rolling window would
+    bridge those gaps and could report a "persistent" run that never happened in real time. Absent
+    epochs count as not-asleep here, the same rule as through_night.sleep_period().
+    """
     ep = (d.drop_duplicates(["subject", "epoch"])[["subject", "start_sec", "stage_code"]]
             .sort_values(["subject", "start_sec"]))
     rows = []
     for sid, g in ep.groupby("subject", sort=False):
-        asleep = g["stage_code"].isin([1, 2, 3, 4]).to_numpy().astype(int)
+        start = g["start_sec"].to_numpy(float)
+        stage = g["stage_code"].to_numpy()
+        k = np.rint(start / EPOCH_SEC).astype(int)
+        k0 = k.min()
+        asleep = np.zeros(k.max() - k0 + 1, dtype=int)       # grid slot = epoch index - first epoch index
+        asleep[k - k0] = np.isin(stage, [1, 2, 3, 4])
         if asleep.sum() == 0:
             continue
         # fwd[i] = sleep epochs in asleep[i : i + onset_run]      -> persistent onset
@@ -60,16 +71,17 @@ def sleep_periods(d: pd.DataFrame, onset_run: int) -> pd.DataFrame:
         hit_off = np.flatnonzero(bwd == onset_run)
         if hit_on.size == 0 or hit_off.size == 0:
             continue
-        start = g["start_sec"].to_numpy()
-        onset = start[hit_on[0]]
-        end = start[hit_off[-1]] + EPOCH_SEC   # end of last epoch in the final sustained sleep run
+        onset = (k0 + hit_on[0]) * float(EPOCH_SEC)
+        end = (k0 + hit_off[-1]) * float(EPOCH_SEC) + EPOCH_SEC   # end of last epoch in the final sustained sleep run
+        if end <= onset:
+            continue
         inside = (start >= onset) & (start < end)
-        sws = (g["stage_code"].to_numpy() == 3) & inside
+        sws = (stage == 3) & inside
         mid = onset + (end - onset) / 2
         rows.append({
             "subject": sid, "onset_sec": onset, "end_sec": end,
             "sp_min": (end - onset) / 60,
-            "tst_min": (asleep.astype(bool) & inside).sum() * EPOCH_SEC / 60,
+            "tst_min": (np.isin(stage, [1, 2, 3, 4]) & inside).sum() * EPOCH_SEC / 60,
             "sws_min_total": sws.sum() * EPOCH_SEC / 60,
             "sws_min_first_half": (sws & (start < mid)).sum() * EPOCH_SEC / 60,
         })

@@ -13,13 +13,14 @@ Features per stage x channel  (stages: W, N1, N2, SWS, REM and SLEEP = all sleep
     early, late (mean LZ in each window) and delta = late - early; each needs >= --min-epochs clean epochs.
     NB 'SLEEP' mixes stages, so it partly reflects stage composition; the stage-specific rows do not.
 
-Analyses  (Stable vs Decline; Decline = V9TENG < --teng-cut among baseline MMSE >= --baseline-min)
+Analyses  (Stable vs Decline; Decline = V9TENG <= cut among baseline MMSE >= --baseline-min;
+    cut = 80 standard, 88 comparison: --teng-cut 80 88, one output folder per cut)
     1. Univariate: each feature, adjusted for covariates -> Firth OR per SD, penalised-LR p, permutation p,
        plus the continuous V9TENG slope.  Holm and Benjamini-Hochberg across all tests.
     2. Omnibus ("at all?"): ridge-logistic with cross-validated AUC. Covariates alone vs covariates + a
        block of LZ features (channels averaged); permutation p-value for the AUC gain.
 
-Outputs in <night-dir>/windows_1p5h/ (csv + png)
+Outputs in <night-dir>/windows_1p5h/cut80/ and cut88/ (csv + png)
 
 Usage
   uv run --frozen python lz_windows_predict.py
@@ -41,7 +42,7 @@ from scipy import stats
 from scipy.special import expit
 from statsmodels.stats.multitest import multipletests
 
-from lz_h3 import AHI_COLS, DEFAULT_NIGHT, zs
+from lz_h3 import AHI_COLS, DEFAULT_CUTS, DEFAULT_NIGHT, cut_dir, decline_flag, zs
 from lz_h3_firth_perm import COL, firth_dz, perm_score_test
 from lz_night_change import DEFAULT_RES, EPOCH_SEC, sleep_periods
 
@@ -116,8 +117,8 @@ def load_cohort(args, wide: pd.DataFrame, per: pd.DataFrame):
     n_all = len(df)
     df = df.dropna(subset=["V8AGE", "PREMMSE"])
     df = df[df["PREMMSE"] >= args.baseline_min].copy()
-    df["case"] = np.where(df["V9TENG"].notna(), (df["V9TENG"] < args.teng_cut).astype(float), np.nan)
-    df["group"] = np.select([df["V9TENG"].isna(), df["V9TENG"] < args.teng_cut], ["No V9", "Decline"], "Stable")
+    df["case"] = np.where(df["V9TENG"].notna(), decline_flag(df["V9TENG"], args.teng_cut).astype(float), np.nan)
+    df["group"] = np.select([df["V9TENG"].isna(), decline_flag(df["V9TENG"], args.teng_cut)], ["No V9", "Decline"], "Stable")
     df["c_age"], df["c_mmse"] = zs(df["V8AGE"]), zs(df["PREMMSE"])
     df["c_ahi"] = zs(np.log1p(df["AHI"]))
     df["c_sws"], df["c_sp"] = zs(df["sws_min_total"]), zs(df["sp_min"])
@@ -278,7 +279,7 @@ def plot_forest(res, path):
 
 
 def plot_groups(df, cut, win_min, path):
-    names = {"Stable": f"Stable (≥{cut:g})", "Decline": f"Decline (<{cut:g})", "No V9": "No V9 score"}
+    names = {"Stable": f"Stable (>{cut:g})", "Decline": f"Decline (≤{cut:g})", "No V9": "No V9 score"}
     fig, axes = plt.subplots(1, len(STAGES), figsize=(15, 3.8))
     for ax, st in zip(axes, STAGES):
         for k, off in zip(COL, (-0.06, 0.0, 0.06)):
@@ -326,48 +327,13 @@ def plot_cv(store, table, path, name="early+late"):
 
 
 # ======================================================================== main
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--results-dir", type=Path, default=DEFAULT_RES)
-    ap.add_argument("--night-dir", type=Path, default=DEFAULT_NIGHT)
-    ap.add_argument("--subject-file", default="night_change_subject.csv", help="file holding the covariates")
-    ap.add_argument("--window-min", type=float, default=90.0)
-    ap.add_argument("--window-mode", choices=["elapsed", "sleep"], default="elapsed")
-    ap.add_argument("--persist-run", type=int, default=10)
-    ap.add_argument("--min-epochs", type=int, default=10)
-    ap.add_argument("--teng-cut", type=float, default=78.0)
-    ap.add_argument("--baseline-min", type=float, default=24)
-    ap.add_argument("--ahi", choices=list(AHI_COLS), default="hp3r")
-    ap.add_argument("--covset", choices=["M1", "M2", "M3"], default="M2")
-    ap.add_argument("--n-perm", type=int, default=10000)
-    ap.add_argument("--min-n", type=int, default=60)
-    ap.add_argument("--min-events", type=int, default=8)
-    ap.add_argument("--cv-folds", type=int, default=5)
-    ap.add_argument("--cv-repeats", type=int, default=5)
-    ap.add_argument("--cv-perm", type=int, default=300)
-    ap.add_argument("--ridge", type=float, default=10.0, help="ridge penalty on LZ features (standardised)")
-    ap.add_argument("--omnibus-min-frac", type=float, default=0.8)
-    ap.add_argument("--seed", type=int, default=1)
-    args = ap.parse_args()
-    out = args.night_dir / "windows_1p5h"
+def run(args, per, wide, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(args.seed)
-    pd.set_option("display.width", 220, "display.max_columns", 40, "display.float_format", "{:.4g}".format)
-
-    d = pd.read_csv(args.results_dir / "lz_epochs_all.csv", dtype={"subject": str})
-    per = sleep_periods(d, args.persist_run)
-    per = window_bounds(d, per, args.window_min, args.window_mode)
-    print(f"{len(per)} subjects with a persistent sleep period; "
-          f"{int((~per['usable']).sum())} dropped (windows of {args.window_min:g} min would overlap or "
-          f"too little sleep); {int(per['usable'].sum())} usable")
-    sub = window_features(d, per, args.min_epochs)
-    sub.rename(columns={}).to_csv(out / "night_change_subject_1p5h.csv", index=False)
-    wide = to_wide(sub)
-
     df, covs, n_all = load_cohort(args, wide, per)
     fu = df[df["V9TENG"].notna()]
     print(f"cohort: {n_all} subjects in file -> {len(df)} baseline-normal with covariates -> "
-          f"{len(fu)} with V9TENG ({int((fu['case'] == 1).sum())} decline < {args.teng_cut:g}, "
+          f"{len(fu)} with V9TENG ({int((fu['case'] == 1).sum())} decline <= {args.teng_cut:g}, "
           f"{int((fu['case'] == 0).sum())} stable); {int((df['V9TENG'].isna()).sum())} without V9TENG")
 
     preds = [c for c in df.columns if c.split("_")[0] in FEATS and c.count("_") >= 2]
@@ -389,6 +355,51 @@ def main() -> None:
     if store:
         plot_cv(store, table, out / "fig3_cv_auc.png")
     print(f"\nwritten to {out}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--results-dir", type=Path, default=DEFAULT_RES)
+    ap.add_argument("--night-dir", type=Path, default=DEFAULT_NIGHT)
+    ap.add_argument("--subject-file", default="night_change_subject.csv", help="file holding the covariates")
+    ap.add_argument("--window-min", type=float, default=90.0)
+    ap.add_argument("--window-mode", choices=["elapsed", "sleep"], default="elapsed")
+    ap.add_argument("--persist-run", type=int, default=10)
+    ap.add_argument("--min-epochs", type=int, default=10)
+    ap.add_argument("--teng-cut", type=float, nargs="+", default=list(DEFAULT_CUTS),
+                    help="decline = V9TENG <= cut; first value = standard (80), others = comparison (88)")
+    ap.add_argument("--baseline-min", type=float, default=24)
+    ap.add_argument("--ahi", choices=list(AHI_COLS), default="hp3r")
+    ap.add_argument("--covset", choices=["M1", "M2", "M3"], default="M2")
+    ap.add_argument("--n-perm", type=int, default=10000)
+    ap.add_argument("--min-n", type=int, default=60)
+    ap.add_argument("--min-events", type=int, default=8)
+    ap.add_argument("--cv-folds", type=int, default=5)
+    ap.add_argument("--cv-repeats", type=int, default=5)
+    ap.add_argument("--cv-perm", type=int, default=300)
+    ap.add_argument("--ridge", type=float, default=10.0, help="ridge penalty on LZ features (standardised)")
+    ap.add_argument("--omnibus-min-frac", type=float, default=0.8)
+    ap.add_argument("--seed", type=int, default=1)
+    args = ap.parse_args()
+    base_out = args.night_dir / "windows_1p5h"
+    base_out.mkdir(parents=True, exist_ok=True)
+    pd.set_option("display.width", 220, "display.max_columns", 40, "display.float_format", "{:.4g}".format)
+
+    d = pd.read_csv(args.results_dir / "lz_epochs_all.csv", dtype={"subject": str})
+    per = sleep_periods(d, args.persist_run)
+    per = window_bounds(d, per, args.window_min, args.window_mode)
+    print(f"{len(per)} subjects with a persistent sleep period; "
+          f"{int((~per['usable']).sum())} dropped (windows of {args.window_min:g} min would overlap or "
+          f"too little sleep); {int(per['usable'].sum())} usable")
+    sub = window_features(d, per, args.min_epochs)
+    sub.rename(columns={}).to_csv(base_out / "night_change_subject_1p5h.csv", index=False)
+    wide = to_wide(sub)
+
+    for i, cut in enumerate(args.teng_cut):
+        a = argparse.Namespace(**vars(args))
+        a.teng_cut = cut
+        print(f"\n{'#' * 70}\n# cutoff {cut:g} ({'standard' if i == 0 else 'comparison'})\n{'#' * 70}")
+        run(a, per, wide, cut_dir(base_out, cut))
 
 
 if __name__ == "__main__":

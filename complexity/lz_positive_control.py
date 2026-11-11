@@ -13,13 +13,14 @@ Predictors (per subject; all z-scored, so effects are 'per 1 SD')
 
 Outcomes (baseline MMSE >= --baseline-min, with a Visit 9 score)
     continuous V9TENG  OLS, robust (HC3) SEs
-    decline            V9TENG < --teng-cut vs stable; Firth logistic regression
+    decline            V9TENG <= cut vs stable; Firth logistic regression (cut 80 standard, 88 comparison:
+                      --teng-cut 80 88; one output folder per cut)
 
 Models
     1  one predictor at a time, adjusted for age + baseline MMSE (also unadjusted), with a quadratic check
     2  mutually adjusted: SWS + awakenings + AHI together (+ age + MMSE), VIFs, joint block test
 
-Outputs in <night-dir>/positive_control/ (csv + png).
+Outputs in <night-dir>/positive_control/cut80/ and cut88/ (csv + png).
 
 Usage
   uv run --frozen python lz_positive_control.py
@@ -43,7 +44,7 @@ from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.stats.proportion import proportion_confint
 
-from lz_h3 import DEFAULT_NIGHT, zs
+from lz_h3 import DEFAULT_CUTS, DEFAULT_NIGHT, cut_dir, decline_flag, zs
 from lz_h3_firth_perm import firth_dz, firth_fit
 from lz_night_change import DEFAULT_RES, EPOCH_SEC, sleep_periods
 
@@ -71,7 +72,12 @@ def sleep_measures(ep: pd.DataFrame, per: pd.DataFrame, min_wake: int) -> pd.Dat
     for r in per.itertuples():
         g = eg[r.subject]
         g = g[(g["start_sec"] >= r.onset_sec) & (g["start_sec"] < r.end_sec)].sort_values("start_sec")
-        wake = (g["stage_code"].to_numpy() == 0).astype(int)
+        # wake runs on the 30 s time grid: absent (unscored) epochs are NOT wake and break a run,
+        # so two wake bouts separated by a gap are not merged into one awakening
+        k = np.rint(g["start_sec"].to_numpy(float) / EPOCH_SEC).astype(int)
+        wake = np.zeros(k.max() - k.min() + 1, dtype=int) if len(k) else np.zeros(0, dtype=int)
+        if len(k):
+            wake[k - k.min()] = (g["stage_code"].to_numpy() == 0)
         edges = np.diff(np.r_[0, wake, 0])
         lens = np.flatnonzero(edges == -1) - np.flatnonzero(edges == 1)
         rows.append({"subject": r.subject, "sws_min": r.sws_min_total, "tst_min": r.tst_min, "sp_min": r.sp_min,
@@ -133,9 +139,9 @@ def load_cohort(args, meas: pd.DataFrame):
         df[f"z_{name}"] = zs(np.log1p(x) if tf == "log1p" else x)
     df["z_V8AGE"], df["z_PREMMSE"] = df["c_age"], df["c_mmse"]
     fu = df[df["V9TENG"].notna()].copy()
-    fu["case"] = (fu["V9TENG"] < args.teng_cut).astype(float)
+    fu["case"] = decline_flag(fu["V9TENG"], args.teng_cut).astype(float)
     print(f"subjects in file {n_all} -> baseline-normal {n_base} -> with V9TENG {len(fu)} "
-          f"({int(fu['case'].sum())} decline < {args.teng_cut:g}, {int((1 - fu['case']).sum())} stable)")
+          f"({int(fu['case'].sum())} decline <= {args.teng_cut:g}, {int((1 - fu['case']).sum())} stable)")
     print(f"V9TENG range {fu.V9TENG.min():g}-{fu.V9TENG.max():g}, mean {fu.V9TENG.mean():.1f}, SD {fu.V9TENG.std():.1f}")
     return df, fu
 
@@ -229,7 +235,7 @@ def plot_forest(res: pd.DataFrame, cut: float, path: Path) -> None:
     a.set_yticks(y)
     a.set_yticklabels(r["label"])
     a.set_xlabel("V9TENG points per 1 SD (adjusted for age, baseline MMSE)")
-    b.set_xlabel(f"odds ratio for decline (<{cut:g}) per 1 SD (Firth)")
+    b.set_xlabel(f"odds ratio for decline (<={cut:g}) per 1 SD (Firth)")
     a.set_title("Continuous Teng score", fontsize=10)
     b.set_title("Decline vs stable", fontsize=10)
     fig.tight_layout()
@@ -254,7 +260,7 @@ def plot_quintiles(fu: pd.DataFrame, names: list[str], cut: float, path: Path) -
         p = k / n
         axes[1, j].errorbar(range(len(p)), 100 * p, yerr=[100 * (p - lo), 100 * (hi - p)], marker="o", capsize=3,
                             color="#E45756")
-        axes[1, j].set_ylabel(f"% decline (<{cut:g})")
+        axes[1, j].set_ylabel(f"% decline (<={cut:g})")
         for ax in axes[:, j]:
             ax.set_xticks(range(len(xm)))
             ax.set_xticklabels([f"{v:.3g}" for v in xm], fontsize=8)
@@ -266,29 +272,8 @@ def plot_quintiles(fu: pd.DataFrame, names: list[str], cut: float, path: Path) -
 
 
 # ======================================================================= main
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--results-dir", type=Path, default=DEFAULT_RES)
-    ap.add_argument("--night-dir", type=Path, default=DEFAULT_NIGHT)
-    ap.add_argument("--subject-file", default="night_change_subject.csv")
-    ap.add_argument("--persist-run", type=int, default=10)
-    ap.add_argument("--min-wake-epochs", type=int, default=2, help="wake run length that counts as an awakening (2 = 1 min)")
-    ap.add_argument("--teng-cut", type=float, default=78.0)
-    ap.add_argument("--baseline-min", type=float, default=24)
-    ap.add_argument("--sws-var", choices=["sws_min", "sws_pct"], default="sws_min")
-    ap.add_argument("--awak-var", choices=["n_awak", "awak_per_h", "waso_min"], default="awak_per_h")
-    ap.add_argument("--ahi", choices=["hp3r", "hp4u"], default="hp3r")
-    ap.add_argument("--ahi-hp3r-col", default=None, help="exact column name if it differs from nsrr_ahi_hp3r_aasm15")
-    ap.add_argument("--ahi-hp4u-col", default=None, help="exact column name if it differs from nsrr_ahi_hp4u_aasm15")
-    args = ap.parse_args()
-    out = args.night_dir / "positive_control"
+def run(args, meas: pd.DataFrame, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
-    pd.set_option("display.width", 220, "display.max_columns", 40, "display.float_format", "{:.4g}".format)
-
-    ep = pd.read_csv(args.results_dir / "lz_epochs_all.csv", dtype={"subject": str},
-                     usecols=["subject", "epoch", "start_sec", "stage_code"]).drop_duplicates(["subject", "epoch"])
-    per = sleep_periods(ep, args.persist_run)
-    meas = sleep_measures(ep, per, args.min_wake_epochs)
     df, fu = load_cohort(args, meas)
     df.to_csv(out / "positive_control_dataset.csv", index=False)
 
@@ -317,6 +302,37 @@ def main() -> None:
     plot_forest(res, args.teng_cut, out / "fig1_forest_positive_control.png")
     plot_quintiles(fu, preds, args.teng_cut, out / "fig2_quintiles.png")
     print(f"\nwritten to {out}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--results-dir", type=Path, default=DEFAULT_RES)
+    ap.add_argument("--night-dir", type=Path, default=DEFAULT_NIGHT)
+    ap.add_argument("--subject-file", default="night_change_subject.csv")
+    ap.add_argument("--persist-run", type=int, default=10)
+    ap.add_argument("--min-wake-epochs", type=int, default=2, help="wake run length that counts as an awakening (2 = 1 min)")
+    ap.add_argument("--teng-cut", type=float, nargs="+", default=list(DEFAULT_CUTS),
+                    help="decline = V9TENG <= cut; first value = standard (80), others = comparison (88)")
+    ap.add_argument("--baseline-min", type=float, default=24)
+    ap.add_argument("--sws-var", choices=["sws_min", "sws_pct"], default="sws_min")
+    ap.add_argument("--awak-var", choices=["n_awak", "awak_per_h", "waso_min"], default="awak_per_h")
+    ap.add_argument("--ahi", choices=["hp3r", "hp4u"], default="hp3r")
+    ap.add_argument("--ahi-hp3r-col", default=None, help="exact column name if it differs from nsrr_ahi_hp3r_aasm15")
+    ap.add_argument("--ahi-hp4u-col", default=None, help="exact column name if it differs from nsrr_ahi_hp4u_aasm15")
+    args = ap.parse_args()
+    base_out = args.night_dir / "positive_control"
+    base_out.mkdir(parents=True, exist_ok=True)
+    pd.set_option("display.width", 220, "display.max_columns", 40, "display.float_format", "{:.4g}".format)
+
+    ep = pd.read_csv(args.results_dir / "lz_epochs_all.csv", dtype={"subject": str},
+                     usecols=["subject", "epoch", "start_sec", "stage_code"]).drop_duplicates(["subject", "epoch"])
+    per = sleep_periods(ep, args.persist_run)
+    meas = sleep_measures(ep, per, args.min_wake_epochs)
+    for i, cut in enumerate(args.teng_cut):
+        a = argparse.Namespace(**vars(args))
+        a.teng_cut = cut
+        print(f"\n{'#' * 70}\n# cutoff {cut:g} ({'standard' if i == 0 else 'comparison'})\n{'#' * 70}")
+        run(a, meas, cut_dir(base_out, cut))
 
 
 if __name__ == "__main__":

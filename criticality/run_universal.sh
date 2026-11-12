@@ -10,7 +10,7 @@
 
 # --- Configuration (edit these lines) ----------------------------------------
 CODE_DIR="$HOME/pl1358-01/project_data/code/criticality"
-SCRIPT="auc_cognition.py"
+SCRIPT="classify_dementia_multiq.py"
 
 # Optional arguments for the script (leave empty to use the script's defaults)
 ARGS=(

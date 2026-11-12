@@ -10,12 +10,11 @@
 
 # --- Configuration (edit these lines) ----------------------------------------
 CODE_DIR="$HOME/pl1358-01/project_data/code/criticality"
-SCRIPT="cognition_vs_h.py"
+SCRIPT="auc_cognition.py"
 
 # Optional arguments for the script (leave empty to use the script's defaults)
 ARGS=(
-    # --h-dir "$HOME/pl1358-01/project_data/worksof/criticality/high0.5"
-    # --out "$HOME/pl1358-01/project_data/worksof/criticality/high0.5/cognition_vs_h"
+
 )
 # -----------------------------------------------------------------------------
 
